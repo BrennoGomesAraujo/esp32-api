@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const cron = require('node-cron');
 require('dotenv').config();
 
 const app = express();
@@ -44,17 +45,76 @@ const SensorData = mongoose.model('SensorData', sensorSchema);
 let sensorDataMemory = [];
 let nextId = 1;
 
+// Variável para controlar último reset
+let lastResetDate = new Date().toDateString();
+
+// Função para resetar o banco de dados
+async function resetDatabase() {
+  try {
+    console.log('🔄 Iniciando reset automático do banco de dados...');
+    
+    let result;
+    
+    if (mongoose.connection.readyState === 1) {
+      // Reset no MongoDB
+      result = await SensorData.deleteMany({});
+      console.log(`🗑️  Banco de dados MongoDB resetado! ${result.deletedCount} registros removidos.`);
+    } else {
+      // Reset em memória
+      const count = sensorDataMemory.length;
+      sensorDataMemory = [];
+      nextId = 1;
+      result = { deletedCount: count };
+      console.log(`🗑️  Dados em memória resetados! ${count} registros removidos.`);
+    }
+    
+    // Atualizar data do último reset
+    lastResetDate = new Date().toDateString();
+    console.log(`✅ Reset automático concluído em: ${new Date().toLocaleString('pt-BR')}`);
+    
+    return result;
+    
+  } catch (error) {
+    console.error('❌ Erro no reset automático:', error);
+    throw error;
+  }
+}
+
+// Verificar e executar reset diário automaticamente
+function checkAndResetDaily() {
+  const today = new Date().toDateString();
+  
+  if (today !== lastResetDate) {
+    console.log('📅 Novo dia detectado! Executando reset automático...');
+    resetDatabase();
+  }
+}
+
+// Agendar reset automático todo dia à meia-noite (horário UTC)
+cron.schedule('0 0 * * *', () => {
+  console.log('⏰ CRON: Executando reset diário programado...');
+  resetDatabase();
+});
+
+// Também verificar a cada hora se mudou o dia (backup)
+cron.schedule('0 * * * *', () => {
+  checkAndResetDaily();
+});
+
 // Rota de teste
 app.get('/', (req, res) => {
   const dbStatus = mongoose.connection.readyState === 1 ? 'MongoDB' : 'Memória';
   res.json({ 
     message: `🚀 API do ESP32 funcionando com ${dbStatus}!`,
     database: dbStatus,
+    ultimoReset: lastResetDate,
+    proximoReset: 'Todo dia à 00:00 (UTC)',
     endpoints: {
       postData: 'POST /api/sensor-data',
       getData: 'GET /api/sensor-data',
       getLatest: 'GET /api/latest-data',
-      testData: 'POST /api/test-data'
+      testData: 'POST /api/test-data',
+      stats: 'GET /api/stats'
     }
   });
 });
@@ -66,7 +126,7 @@ app.post('/api/sensor-data', async (req, res) => {
     
     const { temperatura, umidadeAr, umidadeSolo, ldr, bomba } = req.body;
     
-    // Validar dados
+    // Validar dados obrigatórios
     if (temperatura === undefined || umidadeAr === undefined || 
         umidadeSolo === undefined || ldr === undefined || bomba === undefined) {
       return res.status(400).json({ 
@@ -100,7 +160,7 @@ app.post('/api/sensor-data', async (req, res) => {
       // Fallback para memória
       sensorData.id = nextId++;
       sensorDataMemory.push(sensorData);
-      console.log('💾 Dados salvos em memória');
+      console.log('💾 Dados salvos em memória!');
       
       res.status(201).json({ 
         success: true, 
@@ -123,12 +183,13 @@ app.get('/api/sensor-data', async (req, res) => {
   try {
     if (mongoose.connection.readyState === 1) {
       // Buscar do MongoDB
-      const data = await SensorData.find().sort({ timestamp: -1 }).limit(50);
+      const data = await SensorData.find().sort({ timestamp: -1 }).limit(100);
       res.json({ 
         success: true, 
         count: data.length,
         data,
-        database: 'mongodb'
+        database: 'mongodb',
+        ultimoReset: lastResetDate
       });
     } else {
       // Buscar da memória
@@ -136,7 +197,8 @@ app.get('/api/sensor-data', async (req, res) => {
         success: true, 
         count: sensorDataMemory.length,
         data: [...sensorDataMemory].reverse(),
-        database: 'memory'
+        database: 'memory',
+        ultimoReset: lastResetDate
       });
     }
   } catch (error) {
@@ -156,14 +218,16 @@ app.get('/api/latest-data', async (req, res) => {
       res.json({ 
         success: true, 
         data,
-        database: 'mongodb'
+        database: 'mongodb',
+        ultimoReset: lastResetDate
       });
     } else {
       const lastData = sensorDataMemory[sensorDataMemory.length - 1] || null;
       res.json({ 
         success: true, 
         data: lastData,
-        database: 'memory'
+        database: 'memory',
+        ultimoReset: lastResetDate
       });
     }
   } catch (error) {
@@ -215,12 +279,70 @@ app.post('/api/test-data', async (req, res) => {
   }
 });
 
+// Rota para estatísticas
+app.get('/api/stats', async (req, res) => {
+  try {
+    let stats;
+    
+    if (mongoose.connection.readyState === 1) {
+      const count = await SensorData.countDocuments();
+      const firstRecord = await SensorData.findOne().sort({ timestamp: 1 });
+      const lastRecord = await SensorData.findOne().sort({ timestamp: -1 });
+      
+      stats = {
+        totalRecords: count,
+        firstRecord: firstRecord ? firstRecord.timestamp : null,
+        lastRecord: lastRecord ? lastRecord.timestamp : null,
+        database: 'mongodb'
+      };
+    } else {
+      stats = {
+        totalRecords: sensorDataMemory.length,
+        firstRecord: sensorDataMemory[0] ? sensorDataMemory[0].timestamp : null,
+        lastRecord: sensorDataMemory[sensorDataMemory.length - 1] ? sensorDataMemory[sensorDataMemory.length - 1].timestamp : null,
+        database: 'memory'
+      };
+    }
+    
+    res.json({
+      success: true,
+      stats,
+      ultimoReset: lastResetDate,
+      proximoReset: 'Todo dia à 00:00 UTC'
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro ao buscar estatísticas:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro ao buscar estatísticas'
+    });
+  }
+});
+
+// Rota para verificar status do reset
+app.get('/api/reset-status', (req, res) => {
+  res.json({
+    success: true,
+    ultimoReset: lastResetDate,
+    proximoReset: 'Todo dia à 00:00 UTC',
+    agora: new Date().toLocaleString('pt-BR'),
+    timezone: 'UTC'
+  });
+});
+
 // Iniciar servidor
 const startServer = async () => {
   await connectDB();
+  
+  // Verificar reset ao iniciar
+  checkAndResetDaily();
+  
   app.listen(PORT, () => {
     console.log(`🎉 Servidor rodando na porta ${PORT}`);
     console.log(`🔗 Acesse: http://localhost:${PORT}`);
+    console.log(`🔄 Reset automático configurado para: Todo dia à 00:00 UTC`);
+    console.log(`📅 Último reset: ${lastResetDate}`);
   });
 };
 
