@@ -48,6 +48,59 @@ let nextId = 1;
 // Variável para controlar último reset
 let lastResetDate = new Date().toDateString();
 
+// ==================== SISTEMA DE DATA AUTOMÁTICA ====================
+
+// Função para verificar data do servidor
+function verificarDataServidor() {
+  const now = new Date();
+  console.log('📅 VERIFICAÇÃO DE DATA DO SERVIDOR:');
+  console.log('   Data do servidor:', now.toString());
+  console.log('   ISO:', now.toISOString());
+  console.log('   UTC:', now.toUTCString());
+  console.log('   Brasil:', now.toLocaleString('pt-BR'));
+  
+  // Verificar se a data parece razoável
+  const ano = now.getFullYear();
+  const mes = now.getMonth() + 1;
+  const dia = now.getDate();
+  
+  console.log('   Data formatada:', dia + '/' + mes + '/' + ano);
+  
+  // Alertas se data parecer incorreta
+  if (ano > 2025) {
+    console.log('⚠️  ALERTA: Data do servidor pode estar adiantada!');
+  }
+  if (ano < 2025) {
+    console.log('⚠️  ALERTA: Data do servidor pode estar atrasada!');
+  }
+  
+  return now;
+}
+
+// Função para obter tempo do MongoDB (mais confiável)
+async function getMongoDBTime() {
+  try {
+    if (mongoose.connection.readyState === 1) {
+      // Usar aggregation para pegar tempo atual do MongoDB
+      const result = await SensorData.aggregate([
+        { $limit: 1 },
+        { $project: { currentTime: "$$NOW" } }
+      ]);
+      
+      if (result.length > 0) {
+        const mongoTime = new Date(result[0].currentTime);
+        console.log('⏰ Tempo do MongoDB:', mongoTime.toLocaleString('pt-BR'));
+        return mongoTime;
+      }
+    }
+  } catch (error) {
+    console.log('⚠️  Não foi possível obter tempo do MongoDB, usando tempo local');
+  }
+  
+  // Fallback para tempo local com verificação
+  return verificarDataServidor();
+}
+
 // Função para resetar o banco de dados
 async function resetDatabase() {
   try {
@@ -60,7 +113,7 @@ async function resetDatabase() {
       const countBefore = await SensorData.countDocuments();
       result = await SensorData.deleteMany({});
       console.log(`🗑️  Banco de dados MongoDB resetado! ${result.deletedCount} registros removidos.`);
-      console.log(`📊 Registros antes: ${countBefore}, depois: ${result.deletedCount}`);
+      console.log(`📊 Registros antes: ${countBefore}, depois: 0`);
     } else {
       // Reset em memória
       const count = sensorDataMemory.length;
@@ -73,6 +126,7 @@ async function resetDatabase() {
     // Atualizar data do último reset
     lastResetDate = new Date().toDateString();
     console.log(`✅ Reset automático concluído em: ${new Date().toLocaleString('pt-BR')}`);
+    console.log(`📅 Último reset atualizado para: ${lastResetDate}`);
     
     return result;
     
@@ -83,50 +137,69 @@ async function resetDatabase() {
 }
 
 // Verificar e executar reset diário automaticamente
-function checkAndResetDaily() {
-  const today = new Date().toDateString();
+async function checkAndResetDaily() {
+  const now = await getMongoDBTime();
+  const today = now.toDateString();
   
-  console.log('📅 Verificação diária:');
+  console.log('📅 VERIFICAÇÃO DIÁRIA:');
+  console.log('   Tempo de referência:', now.toLocaleString('pt-BR'));
   console.log('   Hoje:', today);
   console.log('   Último reset:', lastResetDate);
   console.log('   Precisa resetar?', today !== lastResetDate);
   
+  // LÓGICA SIMPLES: Se mudou o dia, reseta
   if (today !== lastResetDate) {
     console.log('🔄 Novo dia detectado! Executando reset automático...');
-    resetDatabase();
+    await resetDatabase();
   } else {
     console.log('✅ Já resetado hoje.');
   }
 }
 
-// ==================== CONFIGURAÇÃO DO CRON - HORÁRIO BRASÍLIA ====================
-const timezone = 'America/Sao_Paulo';
+// Configurar sistema robusto de reset
+function setupResetSystem() {
+  console.log('⏰ ========== INICIANDO SISTEMA DE RESET ==========');
+  
+  const timezone = 'America/Sao_Paulo';
+  
+  // 1. RESET PRINCIPAL - 00:00 horário Brasil
+  cron.schedule('0 0 * * *', async () => {
+    console.log('⏰ ========== RESET PROGRAMADO ==========');
+    console.log('📅 Executando reset diário programado...');
+    console.log('🕐 Horário (Brasília):', new Date().toLocaleString('pt-BR'));
+    console.log('🌐 Timezone:', timezone);
+    await resetDatabase();
+    console.log('⏰ ========== RESET CONCLUÍDO ==========');
+  }, {
+    timezone: timezone
+  });
 
-console.log('⏰ Configurando agendador para horário de Brasília...');
+  // 2. VERIFICAÇÃO DE BACKUP - A cada 6 horas
+  cron.schedule('0 */6 * * *', async () => {
+    console.log('⏰ ========== VERIFICAÇÃO PERIÓDICA ==========');
+    console.log('🕐 Horário (Brasília):', new Date().toLocaleString('pt-BR'));
+    await checkAndResetDaily();
+    console.log('⏰ ========== VERIFICAÇÃO CONCLUÍDA ==========');
+  }, {
+    timezone: timezone
+  });
 
-// Agendar reset automático todo dia à MEIA-NOITE (horário de Brasília)
-cron.schedule('0 0 * * *', () => {
-  console.log('⏰ ========== CRON ACIONADO ==========');
-  console.log('⏰ Executando reset diário programado...');
-  console.log('📅 Data/hora (Brasília):', new Date().toLocaleString('pt-BR'));
-  console.log('🌐 Timezone:', timezone);
-  resetDatabase();
-  console.log('⏰ ========== CRON FINALIZADO ==========');
-}, {
-  timezone: timezone
-});
+  // 3. VERIFICAÇÃO RÁPIDA - A cada hora (apenas log)
+  cron.schedule('0 * * * *', () => {
+    console.log('⏰ Verificação horária - Último reset:', lastResetDate);
+    verificarDataServidor();
+  }, {
+    timezone: timezone
+  });
 
-// Verificação a cada hora como backup (horário de Brasília)
-cron.schedule('0 * * * *', () => {
-  console.log('⏰ Verificação horária de reset (Brasília)...');
-  checkAndResetDaily();
-}, {
-  timezone: timezone
-});
+  console.log('✅ Sistema de reset configurado!');
+  console.log('   🕐 Reset principal: 00:00 Horário de Brasília');
+  console.log('   🔄 Verificações: A cada 6 horas');
+  console.log('   📍 Timezone:', timezone);
+  console.log('⏰ ========== SISTEMA PRONTO ==========');
+}
 
-console.log('✅ Agendador configurado: 00:00 Horário de Brasília');
-
-// ==================== ROTAS ====================
+// ==================== ROTAS DA API ====================
 
 // Rota para FORÇAR RESET MANUAL
 app.post('/api/force-reset', async (req, res) => {
@@ -155,8 +228,8 @@ app.post('/api/force-reset', async (req, res) => {
 });
 
 // Rota para DEBUG - Ver informações detalhadas
-app.get('/api/debug', (req, res) => {
-  const now = new Date();
+app.get('/api/debug', async (req, res) => {
+  const now = await getMongoDBTime();
   res.json({
     serverTime: {
       iso: now.toISOString(),
@@ -174,11 +247,14 @@ app.get('/api/debug', (req, res) => {
       lastReset: lastResetDate,
       shouldReset: now.toDateString() !== lastResetDate,
       cronStatus: 'Ativo - 00:00 Horário de Brasília',
-      timezone: 'America/Sao_Paulo'
+      timezone: 'America/Sao_Paulo',
+      nextReset: 'Todo dia às 00:00'
     },
     database: {
       type: mongoose.connection.readyState === 1 ? 'MongoDB' : 'Memory',
-      connected: mongoose.connection.readyState === 1
+      connected: mongoose.connection.readyState === 1,
+      recordCount: mongoose.connection.readyState === 1 ? 
+        await SensorData.countDocuments() : sensorDataMemory.length
     }
   });
 });
@@ -422,17 +498,22 @@ app.get('/api/reset-status', (req, res) => {
 const startServer = async () => {
   await connectDB();
   
+  // Configurar sistema de reset
+  setupResetSystem();
+  
   // Verificar reset ao iniciar
-  checkAndResetDaily();
+  setTimeout(async () => {
+    console.log('🚀 Verificação inicial do sistema...');
+    await checkAndResetDaily();
+  }, 5000);
   
   app.listen(PORT, () => {
     console.log(`🎉 Servidor rodando na porta ${PORT}`);
     console.log(`🔗 Acesse: http://localhost:${PORT}`);
-    console.log(`🔄 Reset automático configurado para: Todo dia à 00:00 Horário de Brasília`);
     console.log(`📅 Último reset: ${lastResetDate}`);
     console.log(`🌐 Timezone: America/Sao_Paulo`);
-    console.log(`🐛 Debug disponível em: /api/debug`);
-    console.log(`🔄 Reset manual disponível em: POST /api/force-reset`);
+    console.log(`🐛 Debug: /api/debug`);
+    console.log(`🔄 Reset manual: POST /api/force-reset`);
   });
 };
 
