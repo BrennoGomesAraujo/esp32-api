@@ -45,90 +45,50 @@ const SensorData = mongoose.model('SensorData', sensorSchema);
 let sensorDataMemory = [];
 let nextId = 1;
 
-// Variável para controlar último reset
+// ==================== SISTEMA DE RESET POR TIMESTAMP ====================
+
+// Variáveis para controle do reset (IGNORAM data do servidor)
+let lastResetTimestamp = Date.now();
 let lastResetDate = new Date().toDateString();
-
-// ==================== SISTEMA DE DATA AUTOMÁTICA ====================
-
-// Função para verificar data do servidor
-function verificarDataServidor() {
-  const now = new Date();
-  console.log('📅 VERIFICAÇÃO DE DATA DO SERVIDOR:');
-  console.log('   Data do servidor:', now.toString());
-  console.log('   ISO:', now.toISOString());
-  console.log('   UTC:', now.toUTCString());
-  console.log('   Brasil:', now.toLocaleString('pt-BR'));
-  
-  // Verificar se a data parece razoável
-  const ano = now.getFullYear();
-  const mes = now.getMonth() + 1;
-  const dia = now.getDate();
-  
-  console.log('   Data formatada:', dia + '/' + mes + '/' + ano);
-  
-  // Alertas se data parecer incorreta
-  if (ano > 2025) {
-    console.log('⚠️  ALERTA: Data do servidor pode estar adiantada!');
-  }
-  if (ano < 2025) {
-    console.log('⚠️  ALERTA: Data do servidor pode estar atrasada!');
-  }
-  
-  return now;
-}
-
-// Função para obter tempo do MongoDB (mais confiável)
-async function getMongoDBTime() {
-  try {
-    if (mongoose.connection.readyState === 1) {
-      // Usar aggregation para pegar tempo atual do MongoDB
-      const result = await SensorData.aggregate([
-        { $limit: 1 },
-        { $project: { currentTime: "$$NOW" } }
-      ]);
-      
-      if (result.length > 0) {
-        const mongoTime = new Date(result[0].currentTime);
-        console.log('⏰ Tempo do MongoDB:', mongoTime.toLocaleString('pt-BR'));
-        return mongoTime;
-      }
-    }
-  } catch (error) {
-    console.log('⚠️  Não foi possível obter tempo do MongoDB, usando tempo local');
-  }
-  
-  // Fallback para tempo local com verificação
-  return verificarDataServidor();
-}
+const umDiaEmMs = 24 * 60 * 60 * 1000; // 24 horas em milissegundos
 
 // Função para resetar o banco de dados
 async function resetDatabase() {
   try {
-    console.log('🔄 Iniciando reset automático do banco de dados...');
+    console.log('🔄 ========== INICIANDO RESET ==========');
     
     let result;
+    let countBefore = 0;
     
     if (mongoose.connection.readyState === 1) {
       // Reset no MongoDB
-      const countBefore = await SensorData.countDocuments();
+      countBefore = await SensorData.countDocuments();
       result = await SensorData.deleteMany({});
-      console.log(`🗑️  Banco de dados MongoDB resetado! ${result.deletedCount} registros removidos.`);
-      console.log(`📊 Registros antes: ${countBefore}, depois: 0`);
+      console.log(`🗑️  MongoDB resetado! ${result.deletedCount}/${countBefore} registros removidos.`);
     } else {
       // Reset em memória
-      const count = sensorDataMemory.length;
+      countBefore = sensorDataMemory.length;
       sensorDataMemory = [];
       nextId = 1;
-      result = { deletedCount: count };
-      console.log(`🗑️  Dados em memória resetados! ${count} registros removidos.`);
+      result = { deletedCount: countBefore };
+      console.log(`🗑️  Memória resetada! ${countBefore} registros removidos.`);
     }
     
-    // Atualizar data do último reset
+    // Atualizar controle de tempo (IMPORTANTE: IGNORA data do servidor)
+    lastResetTimestamp = Date.now();
     lastResetDate = new Date().toDateString();
-    console.log(`✅ Reset automático concluído em: ${new Date().toLocaleString('pt-BR')}`);
-    console.log(`📅 Último reset atualizado para: ${lastResetDate}`);
     
-    return result;
+    const proximoReset = new Date(lastResetTimestamp + umDiaEmMs);
+    console.log(`✅ Reset concluído!`);
+    console.log(`📅 Próximo reset: ${proximoReset.toLocaleString('pt-BR')}`);
+    console.log(`⏰ Timestamp do reset: ${lastResetTimestamp}`);
+    console.log('🔄 ========== RESET CONCLUÍDO ==========');
+    
+    return {
+      deletedCount: result.deletedCount || countBefore,
+      countBefore: countBefore,
+      nextReset: proximoReset.toISOString()
+    };
     
   } catch (error) {
     console.error('❌ Erro no reset automático:', error);
@@ -136,66 +96,58 @@ async function resetDatabase() {
   }
 }
 
-// Verificar e executar reset diário automaticamente
+// Verificação baseada em TIMESTAMP (24 horas exatas)
 async function checkAndResetDaily() {
-  const now = await getMongoDBTime();
-  const today = now.toDateString();
+  const agora = Date.now();
+  const tempoDesdeReset = agora - lastResetTimestamp;
+  const horasDesdeReset = tempoDesdeReset / (1000 * 60 * 60);
   
-  console.log('📅 VERIFICAÇÃO DIÁRIA:');
-  console.log('   Tempo de referência:', now.toLocaleString('pt-BR'));
-  console.log('   Hoje:', today);
-  console.log('   Último reset:', lastResetDate);
-  console.log('   Precisa resetar?', today !== lastResetDate);
+  console.log('⏰ VERIFICAÇÃO DE RESET POR TIMESTAMP:');
+  console.log('   Último reset:', new Date(lastResetTimestamp).toLocaleString('pt-BR'));
+  console.log('   Horas desde último reset:', horasDesdeReset.toFixed(2) + 'h');
+  console.log('   Data do servidor (ignorada):', new Date().toString());
   
-  // LÓGICA SIMPLES: Se mudou o dia, reseta
-  if (today !== lastResetDate) {
-    console.log('🔄 Novo dia detectado! Executando reset automático...');
+  if (tempoDesdeReset >= umDiaEmMs) {
+    console.log('🔄 24 horas completas! Executando reset automático...');
     await resetDatabase();
   } else {
-    console.log('✅ Já resetado hoje.');
+    const horasRestantes = (umDiaEmMs - tempoDesdeReset) / (1000 * 60 * 60);
+    const minutosRestantes = ((umDiaEmMs - tempoDesdeReset) / (1000 * 60)) % 60;
+    
+    console.log(`✅ Aguardando: ${Math.floor(horasRestantes)}h ${Math.floor(minutosRestantes)}m para próximo reset`);
+    console.log(`📅 Próximo reset: ${new Date(lastResetTimestamp + umDiaEmMs).toLocaleString('pt-BR')}`);
   }
 }
 
 // Configurar sistema robusto de reset
 function setupResetSystem() {
   console.log('⏰ ========== INICIANDO SISTEMA DE RESET ==========');
+  console.log('🎯 MODO: Timestamp (24 horas exatas)');
+  console.log('🔧 CONFIG: Ignora data do servidor');
   
-  const timezone = 'America/Sao_Paulo';
-  
-  // 1. RESET PRINCIPAL - 00:00 horário Brasil
-  cron.schedule('0 0 * * *', async () => {
-    console.log('⏰ ========== RESET PROGRAMADO ==========');
-    console.log('📅 Executando reset diário programado...');
-    console.log('🕐 Horário (Brasília):', new Date().toLocaleString('pt-BR'));
-    console.log('🌐 Timezone:', timezone);
-    await resetDatabase();
-    console.log('⏰ ========== RESET CONCLUÍDO ==========');
-  }, {
-    timezone: timezone
-  });
-
-  // 2. VERIFICAÇÃO DE BACKUP - A cada 6 horas
-  cron.schedule('0 */6 * * *', async () => {
-    console.log('⏰ ========== VERIFICAÇÃO PERIÓDICA ==========');
-    console.log('🕐 Horário (Brasília):', new Date().toLocaleString('pt-BR'));
+  // VERIFICAÇÃO PRINCIPAL - A cada hora
+  cron.schedule('0 * * * *', async () => {
+    console.log('⏰ [CRON 1h] Verificação de reset...');
     await checkAndResetDaily();
-    console.log('⏰ ========== VERIFICAÇÃO CONCLUÍDA ==========');
-  }, {
-    timezone: timezone
   });
-
-  // 3. VERIFICAÇÃO RÁPIDA - A cada hora (apenas log)
-  cron.schedule('0 * * * *', () => {
-    console.log('⏰ Verificação horária - Último reset:', lastResetDate);
-    verificarDataServidor();
-  }, {
-    timezone: timezone
+  
+  // VERIFICAÇÃO SECUNDÁRIA - A cada 6 horas
+  cron.schedule('0 */6 * * *', async () => {
+    console.log('⏰ [CRON 6h] Verificação detalhada...');
+    await checkAndResetDaily();
   });
-
+  
+  // VERIFICAÇÃO RÁPIDA - A cada 10 minutos (apenas log)
+  cron.schedule('*/10 * * * *', () => {
+    const agora = Date.now();
+    const horasDesdeReset = (agora - lastResetTimestamp) / (1000 * 60 * 60);
+    console.log(`⏰ [CRON 10m] Status: ${horasDesdeReset.toFixed(2)}h desde último reset`);
+  });
+  
   console.log('✅ Sistema de reset configurado!');
-  console.log('   🕐 Reset principal: 00:00 Horário de Brasília');
-  console.log('   🔄 Verificações: A cada 6 horas');
-  console.log('   📍 Timezone:', timezone);
+  console.log('   🔄 Reset: A cada 24 horas (timestamp)');
+  console.log('   🔍 Verificações: 1h, 6h, 10m');
+  console.log('   🛡️  Tolerante: Ignora data do servidor');
   console.log('⏰ ========== SISTEMA PRONTO ==========');
 }
 
@@ -205,17 +157,18 @@ function setupResetSystem() {
 app.post('/api/force-reset', async (req, res) => {
   try {
     console.log('🔄 ========== RESET MANUAL SOLICITADO ==========');
-    console.log('📅 Data/hora (Brasília):', new Date().toLocaleString('pt-BR'));
     
     const result = await resetDatabase();
     
     res.json({
       success: true,
       message: 'Reset manual executado com sucesso!',
-      deletedCount: result.deletedCount || result,
-      serverTime: new Date().toLocaleString('pt-BR'),
-      lastReset: lastResetDate,
-      timezone: 'America/Sao_Paulo'
+      deletedCount: result.deletedCount,
+      countBefore: result.countBefore,
+      nextReset: result.nextReset,
+      lastResetTimestamp: lastResetTimestamp,
+      lastResetHuman: new Date(lastResetTimestamp).toLocaleString('pt-BR'),
+      system: 'Reset por timestamp (24 horas)'
     });
     
   } catch (error) {
@@ -227,34 +180,40 @@ app.post('/api/force-reset', async (req, res) => {
   }
 });
 
-// Rota para DEBUG - Ver informações detalhadas
-app.get('/api/debug', async (req, res) => {
-  const now = await getMongoDBTime();
+// Rota para DEBUG - Informações do sistema
+app.get('/api/debug', (req, res) => {
+  const agora = Date.now();
+  const horasDesdeReset = (agora - lastResetTimestamp) / (1000 * 60 * 60);
+  const horasRestantes = (umDiaEmMs - (agora - lastResetTimestamp)) / (1000 * 60 * 60);
+  
   res.json({
-    serverTime: {
-      iso: now.toISOString(),
-      utc: now.toUTCString(),
-      local: now.toString(),
-      brasilia: now.toLocaleString('pt-BR'),
-      dateString: now.toDateString(),
-      year: now.getFullYear(),
-      month: now.getMonth() + 1,
-      day: now.getDate(),
-      hours: now.getHours(),
-      minutes: now.getMinutes()
+    resetSystem: {
+      type: 'TIMESTAMP_24H',
+      description: 'Reset a cada 24 horas (ignora data servidor)',
+      lastReset: {
+        timestamp: lastResetTimestamp,
+        human: new Date(lastResetTimestamp).toLocaleString('pt-BR'),
+        dateString: lastResetDate
+      },
+      nextReset: {
+        timestamp: lastResetTimestamp + umDiaEmMs,
+        human: new Date(lastResetTimestamp + umDiaEmMs).toLocaleString('pt-BR'),
+        hoursRemaining: horasRestantes.toFixed(2)
+      },
+      progress: {
+        hoursSinceReset: horasDesdeReset.toFixed(2),
+        percentComplete: ((horasDesdeReset / 24) * 100).toFixed(1)
+      }
     },
-    resetInfo: {
-      lastReset: lastResetDate,
-      shouldReset: now.toDateString() !== lastResetDate,
-      cronStatus: 'Ativo - 00:00 Horário de Brasília',
-      timezone: 'America/Sao_Paulo',
-      nextReset: 'Todo dia às 00:00'
+    serverTime: {
+      // Apenas informativo - NÃO usado para reset
+      server: new Date().toLocaleString('pt-BR'),
+      serverISO: new Date().toISOString(),
+      realTime: 'Sistema usa timestamp interno'
     },
     database: {
       type: mongoose.connection.readyState === 1 ? 'MongoDB' : 'Memory',
-      connected: mongoose.connection.readyState === 1,
-      recordCount: mongoose.connection.readyState === 1 ? 
-        await SensorData.countDocuments() : sensorDataMemory.length
+      connected: mongoose.connection.readyState === 1
     }
   });
 });
@@ -262,12 +221,19 @@ app.get('/api/debug', async (req, res) => {
 // Rota de teste
 app.get('/', (req, res) => {
   const dbStatus = mongoose.connection.readyState === 1 ? 'MongoDB' : 'Memória';
+  const horasDesdeReset = (Date.now() - lastResetTimestamp) / (1000 * 60 * 60);
+  const proximoReset = new Date(lastResetTimestamp + umDiaEmMs);
+  
   res.json({ 
     message: `🚀 API do ESP32 funcionando com ${dbStatus}!`,
     database: dbStatus,
-    ultimoReset: lastResetDate,
-    proximoReset: 'Todo dia à 00:00 (Horário de Brasília)',
-    timezone: 'America/Sao_Paulo',
+    resetSystem: {
+      type: 'Timestamp (24 horas)',
+      lastReset: new Date(lastResetTimestamp).toLocaleString('pt-BR'),
+      hoursSinceReset: horasDesdeReset.toFixed(2),
+      nextReset: proximoReset.toLocaleString('pt-BR'),
+      note: 'Sistema ignora data do servidor'
+    },
     endpoints: {
       postData: 'POST /api/sensor-data',
       getData: 'GET /api/sensor-data',
@@ -351,7 +317,7 @@ app.get('/api/sensor-data', async (req, res) => {
         count: data.length,
         data,
         database: 'mongodb',
-        ultimoReset: lastResetDate
+        lastReset: new Date(lastResetTimestamp).toLocaleString('pt-BR')
       });
     } else {
       // Buscar da memória
@@ -360,7 +326,7 @@ app.get('/api/sensor-data', async (req, res) => {
         count: sensorDataMemory.length,
         data: [...sensorDataMemory].reverse(),
         database: 'memory',
-        ultimoReset: lastResetDate
+        lastReset: new Date(lastResetTimestamp).toLocaleString('pt-BR')
       });
     }
   } catch (error) {
@@ -381,7 +347,7 @@ app.get('/api/latest-data', async (req, res) => {
         success: true, 
         data,
         database: 'mongodb',
-        ultimoReset: lastResetDate
+        lastReset: new Date(lastResetTimestamp).toLocaleString('pt-BR')
       });
     } else {
       const lastData = sensorDataMemory[sensorDataMemory.length - 1] || null;
@@ -389,7 +355,7 @@ app.get('/api/latest-data', async (req, res) => {
         success: true, 
         data: lastData,
         database: 'memory',
-        ultimoReset: lastResetDate
+        lastReset: new Date(lastResetTimestamp).toLocaleString('pt-BR')
       });
     }
   } catch (error) {
@@ -469,9 +435,12 @@ app.get('/api/stats', async (req, res) => {
     res.json({
       success: true,
       stats,
-      ultimoReset: lastResetDate,
-      proximoReset: 'Todo dia à 00:00 (Horário de Brasília)',
-      timezone: 'America/Sao_Paulo'
+      resetInfo: {
+        lastReset: new Date(lastResetTimestamp).toLocaleString('pt-BR'),
+        hoursSinceReset: ((Date.now() - lastResetTimestamp) / (1000 * 60 * 60)).toFixed(2),
+        nextReset: new Date(lastResetTimestamp + umDiaEmMs).toLocaleString('pt-BR'),
+        system: 'Timestamp (24 horas)'
+      }
     });
     
   } catch (error) {
@@ -485,12 +454,17 @@ app.get('/api/stats', async (req, res) => {
 
 // Rota para verificar status do reset
 app.get('/api/reset-status', (req, res) => {
+  const horasDesdeReset = (Date.now() - lastResetTimestamp) / (1000 * 60 * 60);
+  const horasRestantes = (umDiaEmMs - (Date.now() - lastResetTimestamp)) / (1000 * 60 * 60);
+  
   res.json({
     success: true,
-    ultimoReset: lastResetDate,
-    proximoReset: 'Todo dia à 00:00 (Horário de Brasília)',
-    agora: new Date().toLocaleString('pt-BR'),
-    timezone: 'America/Sao_Paulo'
+    system: 'Reset por timestamp (24 horas)',
+    lastReset: new Date(lastResetTimestamp).toLocaleString('pt-BR'),
+    hoursSinceReset: horasDesdeReset.toFixed(2),
+    hoursUntilNextReset: horasRestantes.toFixed(2),
+    nextReset: new Date(lastResetTimestamp + umDiaEmMs).toLocaleString('pt-BR'),
+    note: 'Sistema ignora data do servidor - Reset a cada 24 horas exatas'
   });
 });
 
@@ -501,7 +475,7 @@ const startServer = async () => {
   // Configurar sistema de reset
   setupResetSystem();
   
-  // Verificar reset ao iniciar
+  // Verificação inicial
   setTimeout(async () => {
     console.log('🚀 Verificação inicial do sistema...');
     await checkAndResetDaily();
@@ -510,8 +484,9 @@ const startServer = async () => {
   app.listen(PORT, () => {
     console.log(`🎉 Servidor rodando na porta ${PORT}`);
     console.log(`🔗 Acesse: http://localhost:${PORT}`);
-    console.log(`📅 Último reset: ${lastResetDate}`);
-    console.log(`🌐 Timezone: America/Sao_Paulo`);
+    console.log(`🔄 Sistema: Reset por timestamp (24 horas)`);
+    console.log(`🛡️  Tolerante: Ignora data do servidor`);
+    console.log(`📅 Último reset: ${new Date(lastResetTimestamp).toLocaleString('pt-BR')}`);
     console.log(`🐛 Debug: /api/debug`);
     console.log(`🔄 Reset manual: POST /api/force-reset`);
   });
