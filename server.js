@@ -17,10 +17,9 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const connectDB = async () => {
   try {
     if (!MONGODB_URI || MONGODB_URI.includes('sua_string_de_conexao_aqui')) {
-      console.log('⚠️  String de conexão não configurada. Usando memória.');
+      console.log('⚠️ String de conexão não configurada. Usando memória.');
       return;
     }
-    
     await mongoose.connect(MONGODB_URI);
     console.log('✅ Conectado ao MongoDB Atlas!');
   } catch (error) {
@@ -45,150 +44,126 @@ const SensorData = mongoose.model('SensorData', sensorSchema);
 let sensorDataMemory = [];
 let nextId = 1;
 
-// ==================== SISTEMA DE HORA REAL + RESET DIÁRIO ====================
-
-// Variável para controlar último reset (usa data real)
+// Variável para controlar último reset
 let lastResetDay = null;
 
-// Função para pegar hora REAL do Brasil
-async function getRealBrasiliaTime() {
+// Função para obter data real do Brasil via API
+async function getBrazilianDate() {
   try {
     console.log('🌐 Buscando hora real do Brasil...');
     
-    // API WorldTimeAPI - gratuita e confiável
-    const response = await fetch('https://worldtimeapi.org/api/timezone/America/Sao_Paulo');
+    // Tentativa 1: WorldTimeAPI
+    const response = await fetch('http://worldtimeapi.org/api/timezone/America/Sao_Paulo');
     
-    if (!response.ok) throw new Error('API não respondeu');
+    if (response.ok) {
+      const data = await response.json();
+      const brazilTime = new Date(data.datetime);
+      console.log('✅ Hora real obtida:', brazilTime.toLocaleString('pt-BR'));
+      return brazilTime;
+    }
     
-    const data = await response.json();
-    const realTime = new Date(data.datetime);
-    
-    console.log('✅ Hora real do Brasil:', realTime.toLocaleString('pt-BR'));
-    console.log('📡 Fonte: WorldTimeAPI');
-    
-    return realTime;
+    throw new Error('WorldTimeAPI não respondeu');
     
   } catch (error) {
     console.log('❌ Erro ao buscar hora real:', error.message);
     console.log('🔄 Usando cálculo local como fallback...');
-    return getBrasiliaTimeFallback();
+    
+    // Fallback: cálculo local com offset Brasil
+    const localTime = new Date();
+    const utc = localTime.getTime() + (localTime.getTimezoneOffset() * 60000);
+    const brasilOffset = -3 * 60 * 60 * 1000; // UTC-3
+    const brazilTime = new Date(utc + brasilOffset);
+    
+    console.log('🔄 Hora fallback (cálculo):', brazilTime.toLocaleString('pt-BR'));
+    return brazilTime;
   }
-}
-
-// Fallback: cálculo do fuso horário Brasil
-function getBrasiliaTimeFallback() {
-  const now = new Date();
-  // Brasília é UTC-3
-  const offset = -3;
-  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-  const brasiliaTime = new Date(utc + (3600000 * offset));
-  
-  console.log('🔄 Hora fallback (cálculo):', brasiliaTime.toLocaleString('pt-BR'));
-  return brasiliaTime;
-}
-
-// Função principal - SEMPRE usa hora real
-async function getCorrectedDate() {
-  return await getRealBrasiliaTime();
 }
 
 // Função para resetar o banco de dados
 async function resetDatabase() {
   try {
-    console.log('🔄 ========== INICIANDO RESET DIÁRIO ==========');
-    
+    console.log('🔄 Iniciando reset automático do banco de dados...');
     let result;
-    let countBefore = 0;
     
     if (mongoose.connection.readyState === 1) {
       // Reset no MongoDB
-      countBefore = await SensorData.countDocuments();
       result = await SensorData.deleteMany({});
-      console.log(`🗑️  MongoDB resetado! ${result.deletedCount} registros removidos.`);
+      console.log(`🗑️ Banco de dados MongoDB resetado! ${result.deletedCount} registros removidos.`);
     } else {
       // Reset em memória
-      countBefore = sensorDataMemory.length;
+      const count = sensorDataMemory.length;
       sensorDataMemory = [];
       nextId = 1;
-      result = { deletedCount: countBefore };
-      console.log(`🗑️  Memória resetada! ${countBefore} registros removidos.`);
+      result = { deletedCount: count };
+      console.log(`🗑️ Dados em memória resetados! ${count} registros removidos.`);
     }
+
+    // Atualizar data do último reset
+    const currentTime = await getBrazilianDate();
+    lastResetDay = currentTime.getDate();
     
-    // Atualizar dia do último reset
-    const now = await getCorrectedDate();
-    lastResetDay = now.getDate();
-    
-    console.log(`✅ Reset concluído às ${now.toLocaleString('pt-BR')}`);
-    console.log(`📅 Próximo reset: quando virar o dia (00:00 Brasil)`);
-    console.log('🔄 ========== RESET CONCLUÍDO ==========');
-    
-    return {
-      deletedCount: result.deletedCount || countBefore,
-      realTime: now.toLocaleString('pt-BR'),
-      nextReset: '00:00 Horário de Brasília'
-    };
-    
+    console.log(`✅ Reset automático concluído em: ${currentTime.toLocaleString('pt-BR')}`);
+    return result;
   } catch (error) {
     console.error('❌ Erro no reset automático:', error);
     throw error;
   }
 }
 
-// Verificação de reset DIÁRIO (quando muda o dia)
+// Verificar e executar reset diário automaticamente
 async function checkAndResetDaily() {
   try {
-    const now = await getCorrectedDate();
-    const currentDay = now.getDate();
-    const currentHour = now.getHours();
-    const currentMinute = now.getMinutes();
+    const currentTime = await getBrazilianDate();
+    const currentDay = currentTime.getDate();
+    const currentHour = currentTime.getHours();
+    const currentMinute = currentTime.getMinutes();
     
     console.log('📅 VERIFICAÇÃO DE RESET DIÁRIO:');
-    console.log('   Data/hora real:', now.toLocaleString('pt-BR'));
-    console.log('   Dia atual:', currentDay);
-    console.log('   Último reset dia:', lastResetDay);
-    console.log('   Hora atual:', currentHour + ':' + currentMinute);
+    console.log(`   Data/hora real: ${currentTime.toLocaleString('pt-BR')}`);
+    console.log(`   Dia atual: ${currentDay}`);
+    console.log(`   Último reset dia: ${lastResetDay}`);
+    console.log(`   Hora atual: ${currentHour}:${currentMinute}`);
     
-    // Se é a primeira execução, inicializar
+    // Primeira execução
     if (lastResetDay === null) {
+      console.log('📅 Primeira execução - Definindo dia:', currentDay);
       lastResetDay = currentDay;
-      console.log('📅 Primeira execução - Definindo dia:', lastResetDay);
       return;
     }
     
-    // Verificar se mudou o dia E é depois da meia-noite
-    if (currentDay !== lastResetDay && currentHour >= 0) {
-      console.log('🔄 NOVO DIA DETECTADO! Executando reset automático...');
+    // Verificar se mudou o dia E é meia-noite (00:00 até 00:59)
+    if (currentDay !== lastResetDay && currentHour === 0) {
+      console.log('🎯 Condição de reset atendida! Executando reset...');
       await resetDatabase();
     } else {
-      console.log('✅ Mesmo dia - Aguardando meia-noite para reset');
+      console.log('⏳ Aguardando próximo reset (00:00 Brasil)...');
     }
-    
   } catch (error) {
-    console.error('❌ Erro na verificação diária:', error);
+    console.error('❌ Erro na verificação de reset:', error);
   }
 }
 
-// Configurar sistema de reset DIÁRIO
-function setupResetSystem() {
+// Sistema de reset com API de tempo real
+function setupRealTimeResetSystem() {
   console.log('⏰ ========== INICIANDO SISTEMA DE RESET DIÁRIO ==========');
   console.log('🎯 MODO: Reset ao virar o dia (00:00 Brasil)');
   console.log('🌐 FONTE: Hora real da API WorldTimeAPI');
   
-  // VERIFICAÇÃO PRINCIPAL - A cada 30 minutos
+  // Verificação a cada 30 minutos
   cron.schedule('*/30 * * * *', async () => {
-    console.log('⏰ [CRON 30min] Verificando se mudou o dia...');
+    console.log('⏰ Verificação periódica (30min)...');
     await checkAndResetDaily();
   });
   
-  // VERIFICAÇÃO EXTRA - A cada hora
+  // Verificação extra a cada hora
   cron.schedule('0 * * * *', async () => {
-    console.log('⏰ [CRON 1h] Verificação horária...');
+    console.log('⏰ Verificação horária...');
     await checkAndResetDaily();
   });
   
-  // VERIFICAÇÃO PRECISA - Às 00:05 (para garantir reset)
+  // Verificação extra às 00:05 (para garantir o reset)
   cron.schedule('5 0 * * *', async () => {
-    console.log('⏰ [CRON 00:05] Verificação pós-meia-noite...');
+    console.log('⏰ Verificação extra às 00:05...');
     await checkAndResetDaily();
   });
   
@@ -199,206 +174,278 @@ function setupResetSystem() {
   console.log('⏰ ========== SISTEMA PRONTO ==========');
 }
 
-// ==================== ROTAS ATUALIZADAS ====================
-
-// Rota para HORA REAL
-app.get('/api/real-time', async (req, res) => {
-  try {
-    const realTime = await getCorrectedDate();
-    const serverTime = new Date();
-    
-    res.json({
-      success: true,
-      realTime: {
-        brasilia: realTime.toLocaleString('pt-BR'),
-        iso: realTime.toISOString(),
-        timezone: 'America/Sao_Paulo',
-        source: 'WorldTimeAPI'
-      },
-      serverTime: {
-        original: serverTime.toLocaleString('pt-BR'),
-        iso: serverTime.toISOString(), 
-        timezone: 'UTC (Render.com)'
-      },
-      resetInfo: {
-        lastResetDay: lastResetDay,
-        nextReset: '00:00 Horário de Brasília',
-        system: 'Reset diário ao virar o dia'
-      }
-    });
-    
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'Erro ao obter hora real'
-    });
-  }
-});
-
-// Rota para FORÇAR RESET MANUAL
-app.post('/api/force-reset', async (req, res) => {
-  try {
-    console.log('🔄 ========== RESET MANUAL SOLICITADO ==========');
-    
-    const result = await resetDatabase();
-    
-    res.json({
-      success: true,
-      message: 'Reset manual executado com sucesso!',
-      deletedCount: result.deletedCount,
-      realTime: result.realTime,
-      nextReset: result.nextReset,
-      system: 'Reset diário baseado em hora real do Brasil'
-    });
-    
-  } catch (error) {
-    console.error('❌ Erro no reset manual:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erro no reset manual: ' + error.message
-    });
-  }
-});
-
-// Rota para DEBUG
-app.get('/api/debug', async (req, res) => {
-  try {
-    const realTime = await getCorrectedDate();
-    const currentDay = realTime.getDate();
-    
-    res.json({
-      timeSystem: {
-        type: 'REAL_TIME_API',
-        description: 'Hora real do Brasil via API externa',
-        realTime: realTime.toLocaleString('pt-BR'),
-        currentDay: currentDay,
-        source: 'WorldTimeAPI'
-      },
-      resetSystem: {
-        type: 'DAILY_RESET',
-        description: 'Reset automático ao virar o dia (00:00 Brasil)',
-        lastResetDay: lastResetDay,
-        shouldReset: currentDay !== lastResetDay,
-        nextReset: '00:00 Horário de Brasília'
-      },
-      database: {
-        type: mongoose.connection.readyState === 1 ? 'MongoDB' : 'Memory',
-        connected: mongoose.connection.readyState === 1
-      }
-    });
-    
-  } catch (error) {
-    res.status(500).json({ error: 'Erro no debug' });
-  }
-});
-
 // Rota de teste
-app.get('/', async (req, res) => {
+app.get('/', (req, res) => {
   const dbStatus = mongoose.connection.readyState === 1 ? 'MongoDB' : 'Memória';
-  const realTime = await getCorrectedDate();
-  
-  res.json({ 
+  res.json({
     message: `🚀 API do ESP32 funcionando com ${dbStatus}!`,
     database: dbStatus,
-    realTime: {
-      current: realTime.toLocaleString('pt-BR'),
-      timezone: 'America/Sao_Paulo (Brasil)',
-      source: 'WorldTimeAPI'
-    },
-    resetSystem: {
-      type: 'Diário às 00:00',
-      lastResetDay: lastResetDay,
-      nextReset: '00:00 Horário de Brasília'
-    },
+    ultimoReset: lastResetDay !== null ? `Dia ${lastResetDay}` : 'Nunca',
+    proximoReset: 'Todo dia às 00:00 (Horário Brasil)',
+    timezone: 'America/Sao_Paulo',
     endpoints: {
-      realTime: 'GET /api/real-time',
-      postData: 'POST /api/sensor-data', 
+      postData: 'POST /api/sensor-data',
       getData: 'GET /api/sensor-data',
-      forceReset: 'POST /api/force-reset',
-      debug: 'GET /api/debug'
+      getLatest: 'GET /api/latest-data',
+      testData: 'POST /api/test-data',
+      stats: 'GET /api/stats',
+      resetInfo: 'GET /api/reset-info'
     }
   });
 });
 
-// Rota para receber dados do ESP32 (ATUALIZADA)
+// Rota para receber dados do ESP32
 app.post('/api/sensor-data', async (req, res) => {
   try {
     console.log('📥 Dados recebidos:', req.body);
-    
     const { temperatura, umidadeAr, umidadeSolo, ldr, bomba } = req.body;
-    
-    if (temperatura === undefined || umidadeAr === undefined || 
-        umidadeSolo === undefined || ldr === undefined || bomba === undefined) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Dados incompletos' 
+
+    // Validar dados obrigatórios
+    if (temperatura === undefined || umidadeAr === undefined || umidadeSolo === undefined || ldr === undefined || bomba === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Dados incompletos. Envie: temperatura, umidadeAr, umidadeSolo, ldr, bomba'
       });
     }
-    
-    const realTime = await getCorrectedDate();
+
     const sensorData = {
       temperatura: parseFloat(temperatura),
       umidadeAr: parseFloat(umidadeAr),
       umidadeSolo: parseInt(umidadeSolo),
       ldr: parseInt(ldr),
       bomba: Boolean(bomba),
-      timestamp: realTime // USA HORA REAL
+      timestamp: new Date()
     };
 
+    // Tentar salvar no MongoDB, se não conseguir, salva em memória
     if (mongoose.connection.readyState === 1) {
       const savedData = new SensorData(sensorData);
       await savedData.save();
-      
-      res.status(201).json({ 
-        success: true, 
+      console.log('💾 Dados salvos no MongoDB!');
+      res.status(201).json({
+        success: true,
         message: 'Dados salvos no MongoDB!',
         data: savedData,
-        database: 'mongodb',
-        realTime: realTime.toLocaleString('pt-BR')
+        database: 'mongodb'
       });
     } else {
+      // Fallback para memória
       sensorData.id = nextId++;
       sensorDataMemory.push(sensorData);
-      
-      res.status(201).json({ 
-        success: true, 
+      console.log('💾 Dados salvos em memória!');
+      res.status(201).json({
+        success: true,
         message: 'Dados salvos em memória!',
         data: sensorData,
-        database: 'memory', 
-        realTime: realTime.toLocaleString('pt-BR')
+        database: 'memory'
       });
     }
   } catch (error) {
     console.error('❌ Erro ao salvar dados:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Erro interno do servidor'
     });
   }
 });
 
-// Outras rotas (sensor-data, latest-data, stats) atualizadas similarmente...
+// Rota para obter todos os dados
+app.get('/api/sensor-data', async (req, res) => {
+  try {
+    if (mongoose.connection.readyState === 1) {
+      // Buscar do MongoDB
+      const data = await SensorData.find().sort({ timestamp: -1 }).limit(100);
+      res.json({
+        success: true,
+        count: data.length,
+        data,
+        database: 'mongodb',
+        ultimoReset: lastResetDay !== null ? `Dia ${lastResetDay}` : 'Nunca'
+      });
+    } else {
+      // Buscar da memória
+      res.json({
+        success: true,
+        count: sensorDataMemory.length,
+        data: [...sensorDataMemory].reverse(),
+        database: 'memory',
+        ultimoReset: lastResetDay !== null ? `Dia ${lastResetDay}` : 'Nunca'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Erro ao buscar dados:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro interno do servidor'
+    });
+  }
+});
+
+// Rota para obter o último registro
+app.get('/api/latest-data', async (req, res) => {
+  try {
+    if (mongoose.connection.readyState === 1) {
+      const data = await SensorData.findOne().sort({ timestamp: -1 });
+      res.json({
+        success: true,
+        data,
+        database: 'mongodb',
+        ultimoReset: lastResetDay !== null ? `Dia ${lastResetDay}` : 'Nunca'
+      });
+    } else {
+      const lastData = sensorDataMemory[sensorDataMemory.length - 1] || null;
+      res.json({
+        success: true,
+        data: lastData,
+        database: 'memory',
+        ultimoReset: lastResetDay !== null ? `Dia ${lastResetDay}` : 'Nunca'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Erro ao buscar último dado:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro interno do servidor'
+    });
+  }
+});
+
+// Rota para dados de teste
+app.post('/api/test-data', async (req, res) => {
+  try {
+    const testData = {
+      temperatura: Math.random() * 15 + 20,
+      umidadeAr: Math.random() * 50 + 40,
+      umidadeSolo: Math.floor(Math.random() * 1023),
+      ldr: Math.floor(Math.random() * 4095),
+      bomba: Math.random() > 0.5,
+      timestamp: new Date()
+    };
+
+    if (mongoose.connection.readyState === 1) {
+      const savedData = new SensorData(testData);
+      await savedData.save();
+      res.json({
+        success: true,
+        message: 'Dado de teste criado no MongoDB!',
+        data: savedData,
+        database: 'mongodb'
+      });
+    } else {
+      testData.id = nextId++;
+      sensorDataMemory.push(testData);
+      res.json({
+        success: true,
+        message: 'Dado de teste criado em memória!',
+        data: testData,
+        database: 'memory'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Erro ao criar dado de teste:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro interno do servidor'
+    });
+  }
+});
+
+// Rota para estatísticas
+app.get('/api/stats', async (req, res) => {
+  try {
+    let stats;
+    if (mongoose.connection.readyState === 1) {
+      const count = await SensorData.countDocuments();
+      const firstRecord = await SensorData.findOne().sort({ timestamp: 1 });
+      const lastRecord = await SensorData.findOne().sort({ timestamp: -1 });
+      stats = {
+        totalRecords: count,
+        firstRecord: firstRecord ? firstRecord.timestamp : null,
+        lastRecord: lastRecord ? lastRecord.timestamp : null,
+        database: 'mongodb'
+      };
+    } else {
+      stats = {
+        totalRecords: sensorDataMemory.length,
+        firstRecord: sensorDataMemory[0] ? sensorDataMemory[0].timestamp : null,
+        lastRecord: sensorDataMemory[sensorDataMemory.length - 1] ? sensorDataMemory[sensorDataMemory.length - 1].timestamp : null,
+        database: 'memory'
+      };
+    }
+    res.json({
+      success: true,
+      stats,
+      ultimoReset: lastResetDay !== null ? `Dia ${lastResetDay}` : 'Nunca',
+      proximoReset: 'Todo dia às 00:00 (Horário Brasil)',
+      timezone: 'America/Sao_Paulo'
+    });
+  } catch (error) {
+    console.error('❌ Erro ao buscar estatísticas:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro ao buscar estatísticas'
+    });
+  }
+});
+
+// Nova rota para informações do reset
+app.get('/api/reset-info', async (req, res) => {
+  try {
+    const currentTime = await getBrazilianDate();
+    res.json({
+      success: true,
+      sistemaReset: {
+        ultimoReset: lastResetDay !== null ? `Dia ${lastResetDay}` : 'Nunca',
+        proximoReset: '00:00 Horário de Brasília',
+        horaAtual: currentTime.toLocaleString('pt-BR'),
+        timezone: 'America/Sao_Paulo',
+        fonte: 'WorldTimeAPI + Fallback'
+      },
+      database: mongoose.connection.readyState === 1 ? 'MongoDB' : 'Memória'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Erro ao buscar informações do reset'
+    });
+  }
+});
+
+// Rota para forçar reset (apenas para teste)
+app.post('/api/force-reset', async (req, res) => {
+  try {
+    await resetDatabase();
+    res.json({
+      success: true,
+      message: 'Reset forçado executado com sucesso!'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Erro ao forçar reset'
+    });
+  }
+});
 
 // Iniciar servidor
 const startServer = async () => {
   await connectDB();
   
-  // Configurar sistema de reset
-  setupResetSystem();
+  // Configurar sistema de reset com API de tempo real
+  setupRealTimeResetSystem();
   
   // Verificação inicial
   setTimeout(async () => {
     console.log('🚀 Verificação inicial do sistema...');
     await checkAndResetDaily();
   }, 5000);
-  
+
   app.listen(PORT, () => {
     console.log(`🎉 Servidor rodando na porta ${PORT}`);
     console.log(`🔗 Acesse: http://localhost:${PORT}`);
     console.log(`🔄 Sistema: Reset diário às 00:00 Brasil`);
     console.log(`🌐 Fonte hora: WorldTimeAPI`);
-    console.log(`🐛 Debug: /api/debug`);
-    console.log(`🕐 Hora real: /api/real-time`);
+    console.log(`🐛 Debug: /api/reset-info`);
   });
 };
 
