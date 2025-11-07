@@ -57,8 +57,10 @@ async function resetDatabase() {
     
     if (mongoose.connection.readyState === 1) {
       // Reset no MongoDB
+      const countBefore = await SensorData.countDocuments();
       result = await SensorData.deleteMany({});
       console.log(`🗑️  Banco de dados MongoDB resetado! ${result.deletedCount} registros removidos.`);
+      console.log(`📊 Registros antes: ${countBefore}, depois: ${result.deletedCount}`);
     } else {
       // Reset em memória
       const count = sensorDataMemory.length;
@@ -84,21 +86,101 @@ async function resetDatabase() {
 function checkAndResetDaily() {
   const today = new Date().toDateString();
   
+  console.log('📅 Verificação diária:');
+  console.log('   Hoje:', today);
+  console.log('   Último reset:', lastResetDate);
+  console.log('   Precisa resetar?', today !== lastResetDate);
+  
   if (today !== lastResetDate) {
-    console.log('📅 Novo dia detectado! Executando reset automático...');
+    console.log('🔄 Novo dia detectado! Executando reset automático...');
     resetDatabase();
+  } else {
+    console.log('✅ Já resetado hoje.');
   }
 }
 
-// Agendar reset automático todo dia à meia-noite (horário UTC)
+// ==================== CONFIGURAÇÃO DO CRON - HORÁRIO BRASÍLIA ====================
+const timezone = 'America/Sao_Paulo';
+
+console.log('⏰ Configurando agendador para horário de Brasília...');
+
+// Agendar reset automático todo dia à MEIA-NOITE (horário de Brasília)
 cron.schedule('0 0 * * *', () => {
-  console.log('⏰ CRON: Executando reset diário programado...');
+  console.log('⏰ ========== CRON ACIONADO ==========');
+  console.log('⏰ Executando reset diário programado...');
+  console.log('📅 Data/hora (Brasília):', new Date().toLocaleString('pt-BR'));
+  console.log('🌐 Timezone:', timezone);
   resetDatabase();
+  console.log('⏰ ========== CRON FINALIZADO ==========');
+}, {
+  timezone: timezone
 });
 
-// Também verificar a cada hora se mudou o dia (backup)
+// Verificação a cada hora como backup (horário de Brasília)
 cron.schedule('0 * * * *', () => {
+  console.log('⏰ Verificação horária de reset (Brasília)...');
   checkAndResetDaily();
+}, {
+  timezone: timezone
+});
+
+console.log('✅ Agendador configurado: 00:00 Horário de Brasília');
+
+// ==================== ROTAS ====================
+
+// Rota para FORÇAR RESET MANUAL
+app.post('/api/force-reset', async (req, res) => {
+  try {
+    console.log('🔄 ========== RESET MANUAL SOLICITADO ==========');
+    console.log('📅 Data/hora (Brasília):', new Date().toLocaleString('pt-BR'));
+    
+    const result = await resetDatabase();
+    
+    res.json({
+      success: true,
+      message: 'Reset manual executado com sucesso!',
+      deletedCount: result.deletedCount || result,
+      serverTime: new Date().toLocaleString('pt-BR'),
+      lastReset: lastResetDate,
+      timezone: 'America/Sao_Paulo'
+    });
+    
+  } catch (error) {
+    console.error('❌ Erro no reset manual:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erro no reset manual: ' + error.message
+    });
+  }
+});
+
+// Rota para DEBUG - Ver informações detalhadas
+app.get('/api/debug', (req, res) => {
+  const now = new Date();
+  res.json({
+    serverTime: {
+      iso: now.toISOString(),
+      utc: now.toUTCString(),
+      local: now.toString(),
+      brasilia: now.toLocaleString('pt-BR'),
+      dateString: now.toDateString(),
+      year: now.getFullYear(),
+      month: now.getMonth() + 1,
+      day: now.getDate(),
+      hours: now.getHours(),
+      minutes: now.getMinutes()
+    },
+    resetInfo: {
+      lastReset: lastResetDate,
+      shouldReset: now.toDateString() !== lastResetDate,
+      cronStatus: 'Ativo - 00:00 Horário de Brasília',
+      timezone: 'America/Sao_Paulo'
+    },
+    database: {
+      type: mongoose.connection.readyState === 1 ? 'MongoDB' : 'Memory',
+      connected: mongoose.connection.readyState === 1
+    }
+  });
 });
 
 // Rota de teste
@@ -108,13 +190,17 @@ app.get('/', (req, res) => {
     message: `🚀 API do ESP32 funcionando com ${dbStatus}!`,
     database: dbStatus,
     ultimoReset: lastResetDate,
-    proximoReset: 'Todo dia à 00:00 (UTC)',
+    proximoReset: 'Todo dia à 00:00 (Horário de Brasília)',
+    timezone: 'America/Sao_Paulo',
     endpoints: {
       postData: 'POST /api/sensor-data',
       getData: 'GET /api/sensor-data',
       getLatest: 'GET /api/latest-data',
       testData: 'POST /api/test-data',
-      stats: 'GET /api/stats'
+      stats: 'GET /api/stats',
+      forceReset: 'POST /api/force-reset',
+      debug: 'GET /api/debug',
+      resetStatus: 'GET /api/reset-status'
     }
   });
 });
@@ -308,7 +394,8 @@ app.get('/api/stats', async (req, res) => {
       success: true,
       stats,
       ultimoReset: lastResetDate,
-      proximoReset: 'Todo dia à 00:00 UTC'
+      proximoReset: 'Todo dia à 00:00 (Horário de Brasília)',
+      timezone: 'America/Sao_Paulo'
     });
     
   } catch (error) {
@@ -325,9 +412,9 @@ app.get('/api/reset-status', (req, res) => {
   res.json({
     success: true,
     ultimoReset: lastResetDate,
-    proximoReset: 'Todo dia à 00:00 UTC',
+    proximoReset: 'Todo dia à 00:00 (Horário de Brasília)',
     agora: new Date().toLocaleString('pt-BR'),
-    timezone: 'UTC'
+    timezone: 'America/Sao_Paulo'
   });
 });
 
@@ -341,8 +428,11 @@ const startServer = async () => {
   app.listen(PORT, () => {
     console.log(`🎉 Servidor rodando na porta ${PORT}`);
     console.log(`🔗 Acesse: http://localhost:${PORT}`);
-    console.log(`🔄 Reset automático configurado para: Todo dia à 00:00 UTC`);
+    console.log(`🔄 Reset automático configurado para: Todo dia à 00:00 Horário de Brasília`);
     console.log(`📅 Último reset: ${lastResetDate}`);
+    console.log(`🌐 Timezone: America/Sao_Paulo`);
+    console.log(`🐛 Debug disponível em: /api/debug`);
+    console.log(`🔄 Reset manual disponível em: POST /api/force-reset`);
   });
 };
 
